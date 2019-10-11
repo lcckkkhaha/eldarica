@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2018 Philipp Ruemmer. All rights reserved.
+ * Copyright (c) 2011-2019 Philipp Ruemmer. All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -37,10 +37,12 @@ import lazabs.{ParallelComputation, GlobalParameters}
 import lazabs.horn.bottomup.{HornClauses, HornPredAbs, DagInterpolator, Util,
                              HornWrapper}
 import lazabs.horn.abstractions.{AbsLattice, StaticAbstractionBuilder,
-                                 LoopDetector}
+                                 LoopDetector, AbstractionRecord,
+                                 VerificationHints}
+import lazabs.horn.concurrency.HintsSelection.initialIDForHints
 import lazabs.horn.bottomup.TemplateInterpolator
-import lazabs.horn.preprocessor.{HornPreprocessor, DefaultPreprocessor}
-
+import lazabs.horn.preprocessor.DefaultPreprocessor
+import scala.concurrent.TimeoutException
 import scala.collection.mutable.{LinkedHashSet, HashSet => MHashSet,
                                  ArrayBuffer}
 
@@ -158,8 +160,7 @@ class VerificationLoop(system : ParametricEncoder.System) {
 
   import VerificationLoop._
   import ParametricEncoder._
-  import HornPreprocessor.{VerifHintTplElement, VerifHintTplPred,
-                           VerifHintTplEqTerm}
+  import VerificationHints._
   import HornClauses.{Clause, FALSE}
   import Util._
 
@@ -224,7 +225,42 @@ class VerificationLoop(system : ParametricEncoder.System) {
         GlobalParameters.get.withAndWOTemplates
       else
         List()
+      ////debug///
 
+      //No hints selection
+      //val optimizedHints=simpHints
+
+      //Select hints by Edarica
+      import lazabs.horn.concurrency.HintsSelection
+      //HintsSelection.tryAndTestSelecton(encoder,simpHints,simpClauses)
+
+
+
+      //Initial hints ID and store to file
+      //val InitialHintsWithID=initialIDForHints(encoder.globalHints) //ID:head->hint
+      //Call python to select hints
+
+
+      var optimizedHints=simpHints //if there is no readHints flag, use simpHints
+      if(GlobalParameters.get.readHints==true){
+        //Read selected hints from file (NNs)
+        println("simpHints:")
+        simpHints.pretyPrintHints()
+        optimizedHints=HintsSelection.readHintsIDFromFile(GlobalParameters.get.fileName,simpHints,rank="rank:"+GlobalParameters.get.rank.toString)
+        // inconsistency between encoder.globalHints and simpHints
+      }
+
+
+
+
+
+
+
+      println("-------------------Test optimized hints---------------------------------")
+      println("Use hints:")
+      optimizedHints.pretyPrintHints()
+
+      ////debug/////
     val predAbsResult = ParallelComputation(params) {
       val interpolator = if (GlobalParameters.get.templateBasedInterpolation)
                                Console.withErr(Console.out) {
@@ -233,7 +269,7 @@ class VerificationLoop(system : ParametricEncoder.System) {
             simpClauses,
             GlobalParameters.get.templateBasedInterpolationType)
         val autoAbstractionMap =
-          builder.abstractions mapValues (TemplateInterpolator.AbstractionRecord(_))
+          builder.abstractionRecords
         
         val abstractionMap =
           if (encoder.globalPredicateTemplates.isEmpty) {
@@ -244,12 +280,11 @@ class VerificationLoop(system : ParametricEncoder.System) {
             print("Using interpolation templates provided in program: ")
 
             val hintsAbstractionMap =
-              loopDetector hints2AbstractionRecord simpHints
+              loopDetector hints2AbstractionRecord optimizedHints
 
             println(hintsAbstractionMap.keys.toSeq sortBy (_.name) mkString ", ")
 
-            TemplateInterpolator.AbstractionRecord.mergeMaps(
-              autoAbstractionMap, hintsAbstractionMap)
+            AbstractionRecord.mergeMaps(Map(), hintsAbstractionMap)//autoAbstractionMap
           }
 
         TemplateInterpolator.interpolatingPredicateGenCEXAbsGen(
@@ -264,7 +299,7 @@ class VerificationLoop(system : ParametricEncoder.System) {
          "----------------------------------- CEGAR --------------------------------------")
 
       new HornPredAbs(simpClauses,
-                      simpHints.toInitialPredicates,
+        optimizedHints.toInitialPredicates,
                       interpolator).result
     }
 

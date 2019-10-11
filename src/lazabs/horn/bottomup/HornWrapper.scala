@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2018 Hossein Hojjat and Philipp Ruemmer.
+ * Copyright (c) 2011-2019 Hossein Hojjat and Philipp Ruemmer.
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -40,8 +40,7 @@ import lazabs.GlobalParameters
 import lazabs.ParallelComputation
 import lazabs.Main.{TimeoutException, StoppedException}
 import lazabs.horn.preprocessor.{DefaultPreprocessor, HornPreprocessor}
-import HornPreprocessor.{VerifHintElement, VerificationHints,
-                         EmptyVerificationHints, BackTranslator}
+import HornPreprocessor.BackTranslator
 import lazabs.horn.bottomup.HornClauses._
 import lazabs.horn.global._
 import lazabs.utils.Manip._
@@ -52,8 +51,11 @@ import lazabs.types.Type
 import Util._
 import HornPredAbs.{RelationSymbol}
 import lazabs.horn.abstractions.{AbsLattice, AbsReader, LoopDetector,
-                                 StaticAbstractionBuilder}
+                                 StaticAbstractionBuilder, AbstractionRecord,
+                                 VerificationHints, EmptyVerificationHints}
+import AbstractionRecord.AbstractionMap
 import StaticAbstractionBuilder.AbstractionType
+import lazabs.horn.concurrency.ReaderMain
 
 import scala.collection.mutable.{HashSet => MHashSet, HashMap => MHashMap,
                                  LinkedHashMap}
@@ -132,7 +134,7 @@ class HornWrapper(constraints: Seq[HornClause],
   
   //////////////////////////////////////////////////////////////////////////////
 
-  ap.util.Debug enableAllAssertions lazabs.Main.assertions
+  GlobalParameters.get.setupApUtilDebug
 
   private val outStream =
      if (GlobalParameters.get.logStat)
@@ -320,11 +322,11 @@ class InnerHornWrapper(unsimplifiedClauses : Seq[Clause],
   private lazy val absBuilder =
     new StaticAbstractionBuilder(simplifiedClauses, abstractionType)
 
-  private lazy val autoAbstraction : TemplateInterpolator.AbstractionMap =
-    absBuilder.abstractions mapValues (TemplateInterpolator.AbstractionRecord(_))
+  private lazy val autoAbstraction : AbstractionMap =
+    absBuilder.abstractionRecords
 
   /** Manually provided interpolation abstraction hints */
-  private lazy val hintsAbstraction : TemplateInterpolator.AbstractionMap =
+  private lazy val hintsAbstraction : AbstractionMap =
     if (simpHints.isEmpty)
       Map()
     else
@@ -335,8 +337,7 @@ class InnerHornWrapper(unsimplifiedClauses : Seq[Clause],
   private val predGenerator = Console.withErr(outStream) {
     if (lazabs.GlobalParameters.get.templateBasedInterpolation) {
       val fullAbstractionMap =
-        TemplateInterpolator.AbstractionRecord
-          .mergeMaps(hintsAbstraction, autoAbstraction)
+        AbstractionRecord.mergeMaps(hintsAbstraction, autoAbstraction)
 
       if (fullAbstractionMap.isEmpty)
         DagInterpolator.interpolatingPredicateGenCEXAndOr _
@@ -348,6 +349,10 @@ class InnerHornWrapper(unsimplifiedClauses : Seq[Clause],
       DagInterpolator.interpolatingPredicateGenCEXAndOr _
     }
   }
+
+  if (GlobalParameters.get.templateBasedInterpolationPrint &&
+      !simpHints.isEmpty)
+    ReaderMain.printHints(simpHints, name = "Manual verification hints:")
 
   //////////////////////////////////////////////////////////////////////////////
 
