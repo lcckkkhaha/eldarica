@@ -146,6 +146,39 @@ object VerificationHints {
     import VerificationHints._
 
     val predicateHints : Map[IExpression.Predicate, Seq[VerifHintElement]]
+    /////////////////DEBUG///////////
+
+
+    def getValue(key:IExpression.Predicate)={
+      predicateHints(key)
+    }
+
+    def printHints() = {
+      for((key,value)<-predicateHints){
+        println(key)
+        println(value)
+      }
+    }
+
+    def pretyPrintHints() = {
+      println("-----------------------------------")
+      for((key,value)<-predicateHints){
+        println(key.toString())
+        for(v<-value){
+          println(v)
+
+        }
+      }
+    }
+
+    def getPredicateHints() = {
+      predicateHints
+    }
+
+    def numberOfHeads():Int={
+      predicateHints.size
+    }
+    /////////////////DEBUG///////////
 
     def isEmpty = predicateHints.isEmpty
 
