@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2019 Hossein Hojjat, Filip Konecny, Philipp Ruemmer,
+ * Copyright (c) 2011-2020 Hossein Hojjat, Filip Konecny, Philipp Ruemmer,
  * Pavle Subotic. All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -83,6 +83,7 @@ class GlobalParameters extends Cloneable {
   var absInFile = false
   var lbe = false
   var slicing = true
+  var intervals = true
   var prettyPrint = false
   var smtPrettyPrint = false  
 //  var interpolation = false
@@ -104,6 +105,8 @@ class GlobalParameters extends Cloneable {
   var templateBasedInterpolationPortfolio = false
   var templateBasedInterpolationPrint = false
   var cegarHintsFile : String = ""
+  var cegarPostHintsFile : String = ""
+  var predicateOutputFile : String = ""
   var arithmeticMode : CCReader.ArithmeticMode.Value =
     CCReader.ArithmeticMode.Mathematical
   var arrayRemoval = false
@@ -166,6 +169,7 @@ class GlobalParameters extends Cloneable {
     that.absInFile = this.absInFile
     that.lbe = this.lbe
     that.slicing = this.slicing
+    that.intervals = this.intervals
     that.prettyPrint = this.prettyPrint
     that.smtPrettyPrint = this.smtPrettyPrint
     that.ntsPrint = this.ntsPrint
@@ -185,6 +189,8 @@ class GlobalParameters extends Cloneable {
     that.templateBasedInterpolationPortfolio = this.templateBasedInterpolationPortfolio
     that.templateBasedInterpolationPrint = this.templateBasedInterpolationPrint
     that.cegarHintsFile = this.cegarHintsFile
+    that.cegarPostHintsFile = this.cegarPostHintsFile
+    that.predicateOutputFile = this.predicateOutputFile
     that.arithmeticMode = this.arithmeticMode
     that.arrayRemoval = this.arrayRemoval
     that.princess = this.princess
@@ -206,12 +212,6 @@ class GlobalParameters extends Cloneable {
     that.assertions = this.assertions
     that.verifyInterpolants = this.verifyInterpolants
     that.timeoutChecker = this.timeoutChecker
-    //DEBUG
-    that.threadTimeout = this.threadTimeout //debug
-    that.rank = this.rank //debug
-    //that.printHints = this.printHints //DEBUG
-    that.generateTrainData=this.generateTrainData//debug
-    that.readHints=this.readHints
   }
 
   override def clone : GlobalParameters = {
@@ -282,7 +282,7 @@ object Main {
   
 
   val greeting =
-    "Eldarica v2.0.1.\n(C) Copyright 2012-2019 Hossein Hojjat and Philipp Ruemmer"
+    "Eldarica v2.0.4.\n(C) Copyright 2012-2020 Hossein Hojjat and Philipp Ruemmer"
 
   def doMain(args: Array[String],
              stoppingCond : => Boolean) : Unit = try {
@@ -369,6 +369,15 @@ object Main {
         cegarHintsFile = tFile drop 7
         arguments(rest)
       }
+      case tFile :: rest if (tFile.startsWith("-postHints:")) => {
+        cegarPostHintsFile = tFile drop 11
+        arguments(rest)
+      }
+
+      case tFile :: rest if (tFile.startsWith("-pPredicates:")) => {
+        predicateOutputFile = tFile drop 13
+        arguments(rest)
+      }
 
       case "-pHints" :: rest => templateBasedInterpolationPrint = true; arguments(rest)
 
@@ -398,6 +407,7 @@ object Main {
         arguments(rest)
 
       case "-noSlicing" :: rest => slicing = false; arguments(rest)
+      case "-noIntervals" :: rest => intervals = false; arguments(rest)
       //case "-array" :: rest => arrayRemoval = true; arguments(rest)
       case "-princess" :: rest => princess = true; arguments(rest)
       case "-stac" :: rest => staticAccelerate = true; arguments(rest)
@@ -451,8 +461,11 @@ object Main {
           " -lbe\t\tDisable preprocessor (e.g., clause inlining)\n" +
           " -arrayQuans:n\tIntroduce n quantifiers for each array argument (default: 1)\n" +
           " -noSlicing\tDisable slicing of clauses\n" +
-          " -hints:f\tRead initial predicates and abstraction templates from a file\n" +
+          " -noIntervals\tDisable interval analysis\n" +
+          " -hints:f\tRead hints (initial predicates and abstraction templates) from a file\n" +
+          " -postHints:f\tRead hints for processed clauses from a file\n" +
           " -pHints\tPrint initial predicates and abstraction templates\n" +
+          " -pPredicates:f\tOutput predicates computed by CEGAR to a file\n" +
 //          " -glb\t\tUse the global approach to solve Horn clauses (outdated)\n" +
 	  "\n" +
 //          " -abstract\tUse interpolation abstraction for better interpolants (default)\n" +

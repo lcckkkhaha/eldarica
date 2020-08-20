@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2019 Philipp Ruemmer. All rights reserved.
+ * Copyright (c) 2011-2020 Philipp Ruemmer. All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -39,10 +39,9 @@ import lazabs.horn.bottomup.{HornClauses, HornPredAbs, DagInterpolator, Util,
 import lazabs.horn.abstractions.{AbsLattice, StaticAbstractionBuilder,
                                  LoopDetector, AbstractionRecord,
                                  VerificationHints}
-import lazabs.horn.concurrency.HintsSelection.initialIDForHints
 import lazabs.horn.bottomup.TemplateInterpolator
 import lazabs.horn.preprocessor.DefaultPreprocessor
-import scala.concurrent.TimeoutException
+
 import scala.collection.mutable.{LinkedHashSet, HashSet => MHashSet,
                                  ArrayBuffer}
 
@@ -152,11 +151,16 @@ object VerificationLoop {
     println("-" * totalWidth)
   }
 
+  private def diagonalInvariants(n : Int) : Seq[Seq[Int]] =
+    for (i <- 0 until n)
+    yield ((List tabulate n) { j => if (i == j) 1 else 0 })
+
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
-class VerificationLoop(system : ParametricEncoder.System) {
+class VerificationLoop(system : ParametricEncoder.System,
+                       initialInvariants : Seq[Seq[Int]] = null) {
 
   import VerificationLoop._
   import ParametricEncoder._
@@ -166,9 +170,21 @@ class VerificationLoop(system : ParametricEncoder.System) {
 
   val result = {
     val processNum = system.processes.size
+
     var invariants : Seq[Seq[Int]] =
-      for (i <- 0 until processNum)
-      yield ((List tabulate processNum) { j => if (i == j) 1 else 0 })
+      initialInvariants match {
+        case null =>
+          diagonalInvariants(processNum)
+        case invs => {
+          assert(invs forall { v => v.size == processNum &&
+                                    (v forall (_ >= 0)) &&
+                                    ((v zip system.processes) forall {
+                                      case (s, (_, Singleton)) => s <= 1
+                                      case _                   => true
+                                    }) })
+          invs
+        }
+      }
 
     var res : Either[Unit, Counterexample] = null
 
@@ -284,7 +300,7 @@ class VerificationLoop(system : ParametricEncoder.System) {
 
             println(hintsAbstractionMap.keys.toSeq sortBy (_.name) mkString ", ")
 
-            AbstractionRecord.mergeMaps(Map(), hintsAbstractionMap)//autoAbstractionMap
+            AbstractionRecord.mergeMaps(autoAbstractionMap, hintsAbstractionMap)
           }
 
         TemplateInterpolator.interpolatingPredicateGenCEXAbsGen(

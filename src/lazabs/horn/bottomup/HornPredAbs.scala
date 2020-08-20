@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2011-2019 Philipp Ruemmer. All rights reserved.
+ * Copyright (c) 2011-2020 Philipp Ruemmer. All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -42,6 +42,7 @@ import ap.terfor.preds.{Predicate, Atom}
 import ap.terfor.substitutions.{ConstantSubst, VariableSubst, VariableShiftSubst}
 import ap.proof.{ModelSearchProver, QuantifierElimProver}
 import ap.proof.theoryPlugins.PluginSequence
+import ap.proof.tree.SeededRandomDataSource
 import ap.util.{Seqs, Timeout}
 import ap.theories.{Theory, TheoryCollector}
 import ap.types.{TypeTheory, Sort, MonoSortedPredicate, IntToTermTranslator}
@@ -160,6 +161,7 @@ object HornPredAbs {
   }
 
   def predArgumentSorts(pred : Predicate) : Seq[Sort] = pred match {
+    // TODO: use function MonoSortedPredicate.argumentSorts for this
     case pred : MonoSortedPredicate => pred.argSorts
     case _ => for (_ <- 0 until pred.arity) yield Sort.Integer
   }
@@ -575,15 +577,15 @@ class HornPredAbs[CC <% HornClauses.ConstraintClause]
 
   val useHashing =
     (theories forall {
-       case ap.types.TypeTheory                    => true
-       case ap.theories.nia.GroebnerMultiplication => true
-       case ap.theories.ModuloArithmetic           => true
-       case _                                      => false
+       case ap.types.TypeTheory                 => true
+       case ap.theories.GroebnerMultiplication  => true
+       case ap.theories.ModuloArithmetic        => true
+       case _                                   => false
      }) &&
     (theories exists {
-       case ap.theories.nia.GroebnerMultiplication => true
-       case ap.theories.ModuloArithmetic           => true
-       case _                                      => false
+       case ap.theories.GroebnerMultiplication  => true
+       case ap.theories.ModuloArithmetic        => true
+       case _                                   => false
      })
 
   if (useHashing)
@@ -616,18 +618,23 @@ class HornPredAbs[CC <% HornClauses.ConstraintClause]
       rawNormClauses.put(NormClause(c, (p) => relationSymbols(p)), c)
     }
 
-    val res = new LinkedHashMap[NormClause, CC]
+    if (lazabs.GlobalParameters.get.intervals) {
+      val res = new LinkedHashMap[NormClause, CC]
 
-    val propagator =
-      new IntervalPropagator (rawNormClauses.keys.toIndexedSeq,
-                              sf.reducerSettings)
+      val propagator =
+        new IntervalPropagator (rawNormClauses.keys.toIndexedSeq,
+                                sf.reducerSettings)
 
-    for ((nc, oc) <- propagator.result)
-      res.put(nc, rawNormClauses(oc))
+      for ((nc, oc) <- propagator.result)
+        res.put(nc, rawNormClauses(oc))
 
-    (res.toSeq, propagator.rsBounds)
-
-//   rawNormClauses.toSeq
+      (res.toSeq, propagator.rsBounds)
+    } else {
+      val emptyBounds =
+        (for (rs <- relationSymbols.valuesIterator)
+         yield (rs -> Conjunction.TRUE)).toMap
+      (rawNormClauses.toSeq, emptyBounds)
+    }
   }
 
   val relationSymbolReducers =
@@ -669,6 +676,7 @@ class HornPredAbs[CC <% HornClauses.ConstraintClause]
 //    gs = Param.PREDICATE_MATCH_CONFIG.set(gs, signature.predicateMatchConfig)
     gs = Param.THEORY_PLUGIN.set(gs, PluginSequence(plugins))
     gs = Param.REDUCER_SETTINGS.set(gs, sf.reducerSettings)
+    gs = Param.RANDOM_DATA_SOURCE.set(gs, new SeededRandomDataSource(12354))
     gs
   }
 
@@ -1002,7 +1010,10 @@ class HornPredAbs[CC <% HornClauses.ConstraintClause]
 
   //////////////////////////////////////////////////////////////////////////////
 
-  lazy val relevantPredicates : Map[Predicate, Seq[Conjunction]] = {
+  /**
+   * A set of predicates that is sufficient to solve the set of Horn clauses.
+   */
+  lazy val relevantRawPredicates : Map[Predicate, Seq[Conjunction]] = {
     import TerForConvenience._
     implicit val order = sf.order
 
@@ -1020,6 +1031,14 @@ class HornPredAbs[CC <% HornClauses.ConstraintClause]
       rs.pred -> allPreds.distinct
     }).toMap
   }
+
+  /**
+   * A set of predicates that is sufficient to solve the set of Horn clauses.
+   */
+  lazy val relevantPredicates : Map[Predicate, Seq[IFormula]] =
+    for ((p, preds) <- relevantRawPredicates) yield {
+      p -> convertToInputAbsy(p, preds)
+    }
 
   //////////////////////////////////////////////////////////////////////////////
 
@@ -1047,41 +1066,57 @@ class HornPredAbs[CC <% HornClauses.ConstraintClause]
 
   //////////////////////////////////////////////////////////////////////////////
 
+  /**
+   * The result of CEGAR: either a solution of the Horn clauses, or
+   * a counterexample DAG containing the predicates and clauses.
+   */
   lazy val result : Either[Map[Predicate, IFormula],
                            Dag[(IAtom, CC)]] = rawResult match {
     case Left(solution) =>
-      Left(for ((p, c) <- solution) yield {
-             if (c.isTrue) {
-               (p, IBoolLit(true))
-             } else if (c.isFalse) {
-               (p, IBoolLit(false))
-             } else {
-               // we replace the variables with sorted constants, to
-               // to enable theory-specific back-translation
-               val consts =
-                 for (s <- predArgumentSorts(p)) yield (s newConstant "X")
-               val order =
-                 c.order extend consts.reverse
-               val cWithConsts =
-                 TypeTheory.filterTypeConstraints(
-                   VariableSubst(0, consts, order)(c))
-               implicit val context =
-                 new Theory.DefaultDecoderContext(cWithConsts)
-               val internal =
-                 Internal2InputAbsy(cWithConsts,
-                                    sf.functionEnc.predTranslation)
-               val simp =
-                 IntToTermTranslator((new Simplifier)(internal))
-               val backSubst =
-                 (for ((c, n) <- consts.iterator.zipWithIndex)
-                  yield (c -> IVariable(n))).toMap
-               val simpWithVars =
-                 ConstantSubstVisitor(simp, backSubst)
-               (p, simpWithVars)
-             }})
+      Left(for ((p, c) <- solution)
+           yield (p, convertToInputAbsy(p, List(c)).head))
     case Right(trace) =>
       Right(trace)
   }
+
+  /**
+   * Translate solution formulas back to input ASTs. This will
+   * first replace the variables with sorted constants, to
+  *  to enable theory-specific back-translation.
+   */
+  private def convertToInputAbsy(p : Predicate,
+                                 cs : Seq[Conjunction]) : Seq[IFormula] =
+    cs match {
+      case Seq(c) if c.isTrue =>
+        List(IBoolLit(true))
+      case Seq(c) if c.isFalse =>
+        List(IBoolLit(false))
+      case cs => {
+        val consts =
+          for (s <- predArgumentSorts(p)) yield (s newConstant "X")
+        val order =
+          sf.order extend consts.reverse
+        val subst =
+          VariableSubst(0, consts, order)
+        val backSubst =
+          (for ((c, n) <- consts.iterator.zipWithIndex)
+           yield (c -> IVariable(n))).toMap
+        val simplifier =
+          new Simplifier
+
+        for (c <- cs) yield {
+          val cWithConsts =
+            TypeTheory.filterTypeConstraints(subst(c))
+          implicit val context =
+            new Theory.DefaultDecoderContext(cWithConsts)
+          val internal =
+            Internal2InputAbsy(cWithConsts, sf.functionEnc.predTranslation)
+          val simp =
+            IntToTermTranslator(simplifier(internal))
+          ConstantSubstVisitor(simp, backSubst)
+        }
+      }
+    }
   
   //////////////////////////////////////////////////////////////////////////////
   
@@ -1670,7 +1705,8 @@ class HornPredAbs[CC <% HornClauses.ConstraintClause]
 
       val rsPreds =
         (for (f <- fors.iterator;
-              substF = rsReducer(subst(f));
+              substF2 = rsReducer(subst(f));
+              substF <- splitPredicate(substF2);
               if (reallyAddPredicate(substF, rs));
               pred = genSymbolPred(substF, rs);
               if (!(predicates(rs) exists
@@ -1778,6 +1814,16 @@ class HornPredAbs[CC <% HornClauses.ConstraintClause]
   }
   
   //////////////////////////////////////////////////////////////////////////////
+
+  /**
+   * Split a new predicate into conjuncts, which can be treated
+   * then as separate predicates.
+   */
+  def splitPredicate(f : Conjunction) : Iterator[Conjunction] =
+    if (f.quans.isEmpty)
+      f.iterator
+    else
+      Iterator single f
 
   def reallyAddPredicate(f : Conjunction,
                          rs : RelationSymbol) : Boolean =

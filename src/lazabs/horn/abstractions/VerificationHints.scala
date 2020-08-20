@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2016-2019 Philipp Ruemmer. All rights reserved.
+ * Copyright (c) 2016-2020 Philipp Ruemmer. All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -146,39 +146,7 @@ object VerificationHints {
     import VerificationHints._
 
     val predicateHints : Map[IExpression.Predicate, Seq[VerifHintElement]]
-    /////////////////DEBUG///////////
 
-
-    def getValue(key:IExpression.Predicate)={
-      predicateHints(key)
-    }
-
-    def printHints() = {
-      for((key,value)<-predicateHints){
-        println(key)
-        println(value)
-      }
-    }
-
-    def pretyPrintHints() = {
-      println("-----------------------------------")
-      for((key,value)<-predicateHints){
-        println(key.toString())
-        for(v<-value){
-          println(v)
-
-        }
-      }
-    }
-
-    def getPredicateHints() = {
-      predicateHints
-    }
-
-    def numberOfHeads():Int={
-      predicateHints.size
-    }
-    /////////////////DEBUG///////////
     def isEmpty = predicateHints.isEmpty
 
     def filterPredicates(remainingPreds : GSet[IExpression.Predicate]) = {
@@ -212,6 +180,22 @@ object VerificationHints {
             remHints = for (VerifHintInitPred(f) <- hints) yield f;
             if !remHints.isEmpty)
        yield (p -> remHints)).toMap
+
+    def ++(that : VerificationHints) =
+      if (that.isEmpty) {
+        this
+      } else if (this.isEmpty) {
+        that
+      } else {
+        val allHints =
+          predicateHints ++
+          (for ((p, hints) <- predicateHints.iterator) yield
+            (predicateHints get p) match {
+              case Some(oldHints) => p -> (oldHints ++ hints)
+              case None           => p -> hints
+            })
+        VerificationHints(allHints)
+      }
   }
 
   //////////////////////////////////////////////////////////////////////////////

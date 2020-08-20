@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2016-2018 Philipp Ruemmer. All rights reserved.
+ * Copyright (c) 2016-2020 Philipp Ruemmer. All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -49,13 +49,14 @@ class DefaultPreprocessor extends HornPreprocessor {
   val printWidth = 55
   val clauseNumWidth = 10
 
-  val preStages : List[HornPreprocessor] =
+  def preStages : List[HornPreprocessor] =
     List(ReachabilityChecker,
-         PartialConstraintEvaluator,
-         DefinitionInliner,
-         new ClauseInliner) 
+         new PartialConstraintEvaluator,
+         new ConstraintSimplifier,
+         new ClauseInliner,
+         new SizeArgumentExtender)
 
-  val postStages : List[HornPreprocessor] =
+  def postStages : List[HornPreprocessor] =
     List(new ClauseShortener) ++
     (if (lazabs.GlobalParameters.get.splitClauses)
       List(new ClauseSplitter) else List()) ++
@@ -85,7 +86,7 @@ class DefaultPreprocessor extends HornPreprocessor {
     val translators = new ArrayBuffer[BackTranslator]
 
     def applyStage(stage : HornPreprocessor) =
-      if (!curClauses.isEmpty) {
+      if (!curClauses.isEmpty && stage.isApplicable(curClauses)) {
         lazabs.GlobalParameters.get.timeoutChecker()
 
         val startTime = System.currentTimeMillis
@@ -107,9 +108,9 @@ class DefaultPreprocessor extends HornPreprocessor {
       var curSize = curClauses.size
       while (lastSize != curSize) {
         lastSize = curSize
-        applyStage(AbstractAnalyser.EqualityPropagator)
-        applyStage(AbstractAnalyser.ConstantPropagator)
-        applyStage(DefinitionInliner)
+        applyStage(SimplePropagators.EqualityPropagator)
+        applyStage(SimplePropagators.ConstantPropagator)
+        applyStage(new ConstraintSimplifier)
         applyStage(new ClauseInliner)
         applyStage(ReachabilityChecker)
         if (lazabs.GlobalParameters.get.slicing)
