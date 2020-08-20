@@ -30,10 +30,13 @@
 
 package lazabs
 
-import java.io.{FileInputStream,InputStream,FileNotFoundException}
+import java.io.{File, FileInputStream, FileNotFoundException, InputStream, PrintWriter}
+import java.lang.System.currentTimeMillis
+
 import parser._
 import lazabs.art._
 import lazabs.art.SearchMethod._
+import lazabs.horn.global.HornClause
 import lazabs.prover._
 import lazabs.viewer._
 import lazabs.utils.Inline._
@@ -44,9 +47,12 @@ import lazabs.horn.parser.HornReader
 import lazabs.horn.bottomup.HornPredAbs.RelationSymbol
 import lazabs.horn.abstractions.AbsLattice
 import lazabs.horn.abstractions.StaticAbstractionBuilder.AbstractionType
+import lazabs.horn.abstractions.StaticAbstractionBuilderSmtHintsSelection
 import lazabs.horn.concurrency.CCReader
 import lazabs.horn.abstractions.VerificationHints
-import lazabs.horn.concurrency.VerificationLoop
+import lazabs.horn.concurrency.{VerificationLoop}
+
+import ap.util.Debug
 
 import ap.util.Debug
 
@@ -68,9 +74,14 @@ class GlobalParameters extends Cloneable {
   //var printHints=VerificationHints(Map())
   var totalHints=0 //DEBUG
   var threadTimeout = 2000 //debug
-  var generateTrainData=false
+  var solvabilityTimeout=2000
+  var extractTemplates=false
+  var extractPredicates=false
   var readHints=false
   var rank=0.0
+  var getSMT2=false
+  var getHornGraph=false
+  var hornGraphWithHints=false
   var in: InputStream = null
   var fileName = ""
   var funcName = "main"
@@ -212,6 +223,17 @@ class GlobalParameters extends Cloneable {
     that.assertions = this.assertions
     that.verifyInterpolants = this.verifyInterpolants
     that.timeoutChecker = this.timeoutChecker
+    //DEBUG
+    that.threadTimeout = this.threadTimeout //debug
+    that.solvabilityTimeout=this.solvabilityTimeout
+    that.rank = this.rank //debug
+    //that.printHints = this.printHints //DEBUG
+    that.extractTemplates=this.extractTemplates//debug
+    that.extractPredicates=this.extractPredicates//debug
+    that.readHints=this.readHints
+    that.getSMT2=this.getSMT2
+    that.getHornGraph=this.getHornGraph
+    that.hornGraphWithHints=this.hornGraphWithHints
   }
 
   override def clone : GlobalParameters = {
@@ -282,6 +304,7 @@ object Main {
   
 
   val greeting =
+
     "Eldarica v2.0.4.\n(C) Copyright 2012-2020 Hossein Hojjat and Philipp Ruemmer"
 
   def doMain(args: Array[String],
@@ -301,8 +324,12 @@ object Main {
       //case "-r" :: rest => drawRTree = true; arguments(rest)
       case "-f" :: rest => absInFile = true; arguments(rest)
       case "-p" :: rest => prettyPrint = true; arguments(rest)
-      case "-generateTrainData" :: rest => generateTrainData = true; arguments(rest)
+      case "-extractTemplates" :: rest => extractTemplates = true; arguments(rest)
+      case "-extractPredicates" :: rest => extractPredicates = true; arguments(rest)
       case "-readHints" :: rest => readHints = true; arguments(rest)
+      case "-getSMT2" :: rest => getSMT2 = true; arguments(rest)
+      case "-getHornGraph" :: rest => getHornGraph = true; arguments(rest)
+      case "-hornGraphWithHints" :: rest => hornGraphWithHints = true; arguments(rest)
       case "-pIntermediate" :: rest => printIntermediateClauseSets = true; arguments(rest)
       case "-sp" :: rest => smtPrettyPrint = true; arguments(rest)
 //      case "-pnts" :: rest => ntsPrint = true; arguments(rest)
@@ -359,6 +386,10 @@ object Main {
       case tTimeout :: rest if (tTimeout.startsWith("-absTimeout:")) =>  //debug
         threadTimeout =
           (java.lang.Float.parseFloat(tTimeout.drop(12)) ).toInt;
+        arguments(rest)
+      case tTimeout :: rest if (tTimeout.startsWith("-solvabilityTimeout:")) =>  //debug
+        solvabilityTimeout =
+          (java.lang.Float.parseFloat(tTimeout.drop("-solvabilityTimeout:".length)) ).toInt;
         arguments(rest)
       case tTimeout :: rest if (tTimeout.startsWith("-rank:")) =>  //debug
         rank =
@@ -488,9 +519,16 @@ object Main {
           "C/C++/TA front-end:\n" +
           " -arithMode:t\tInteger semantics: math (default), ilp32, lp64, llp64\n" +
           " -pIntermediate\tDump Horn clauses encoding concurrent programs\n"+
-          " -generateTrainData\toutput training data\n"+
+          " -extractTemplates\textract templates training data\n"+
+          " -extractPredicates\textract predicates training data\n"+
           " -absTimeout:time\tset timeout for labeling hints\n"+
-          " -rank:n\tuse top n or score above n ranked hints read from file\n"
+          " -solvabilityTimeout:time\tset timeout for solvability\n"+
+          " -rank:n\tuse top n or score above n ranked hints read from file\n"+
+          " -getSMT2\tget SMT2 file\n"+
+          " -getHornGraph\tget horn graph file and GNN input\n"+
+          " -hornGraphWithHints\tget horn graph file with hints\n"
+
+
           )
           false
       case fn :: rest => fileName = fn;  openInputFile; arguments(rest)
@@ -600,12 +638,27 @@ object Main {
       
       if(prettyPrint) {
         println(HornPrinter(clauseSet))
+
         //println(clauseSet.map(lazabs.viewer.HornPrinter.printDebug(_)).mkString("\n\n"))
         return
       }
 
       if(smtPrettyPrint) {
         println(HornSMTPrinter(clauseSet))
+        return
+      }
+      if(extractTemplates){
+        //do selection
+        lazabs.horn.TrainDataGeneratorSmt2(clauseSet, absMap, global, disjunctive,
+          drawRTree, lbe) //generate train data
+
+
+        return
+      }
+      if(extractPredicates){
+        //do selection
+        lazabs.horn.TrainDataGeneratorPredicatesSmt2(clauseSet, absMap, global, disjunctive,
+          drawRTree, lbe) //generate train data.  clauseSet error may caused by import package
         return
       }
 
@@ -644,17 +697,24 @@ object Main {
         lazabs.horn.concurrency.ReaderMain.printClauses(system)
 
       val smallSystem = system.mergeLocalTransitions
-      if(generateTrainData){
-        val systemGraphs=new lazabs.horn.concurrency.GraphGenerator(smallSystem) //generate graph
-
-        return
-      }
       if (prettyPrint) {
         println
         println("After simplification:")
         lazabs.horn.concurrency.ReaderMain.printClauses(smallSystem)
         return
       }
+
+      if(extractTemplates){
+        val systemGraphs=new lazabs.horn.concurrency.TrainDataGenerator(smallSystem,system) //generate train data by templates
+        return
+      }
+      if(extractPredicates){
+
+        val predicateGenerator=new lazabs.horn.concurrency.TrainDataGeneratorPredicate(smallSystem,system) //generate train data by predicates
+
+        return
+      }
+
 
       val result = try {
         Console.withOut(outStream) {
